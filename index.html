@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Image + Pomodoro</title>
+<style>
+  html,body{height:100%;margin:0}
+  .hero{
+    position:relative;
+    width:100%;
+    height:100vh;
+    /* use your exact filename here */
+    background: url('pomodoro-image.png') center/cover no-repeat;
+    background-color: #000; /* fallback if image fails */
+    background-size: cover;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+
+  /* Pomodoro widget — same corner position as your clock */
+  .pomodoro{
+    position:absolute;
+    top:20px;
+    right:20px;
+    width:220px;
+    padding:10px;
+    border-radius:10px;
+    background: rgba(0,0,0,0.38);
+    color:#fff;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    text-align:center;
+    user-select:none;
+  }
+  .mode {
+    font-size:12px;
+    opacity:.9;
+    margin-bottom:6px;
+    font-weight:600;
+  }
+  .time {
+    font-size:26px;
+    font-weight:700;
+    letter-spacing:1px;
+  }
+  .controls{
+    margin-top:8px;
+    display:flex;
+    gap:6px;
+    justify-content:center;
+  }
+  .controls button{
+    flex:1;
+    padding:6px 8px;
+    border-radius:6px;
+    border:0;
+    background: rgba(255,255,255,0.08);
+    color:#fff;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .controls button:active{ transform: translateY(1px); }
+  .adjust {
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+    margin-top:8px;
+    font-size:12px;
+    align-items:center;
+  }
+  .adjust .pair{display:flex;flex-direction:column;align-items:center;flex:1}
+  .adjust .pair .val{font-weight:700;margin:4px 0}
+  .adj-btn{
+    padding:4px 6px;
+    border-radius:6px;
+    border:0;
+    background: rgba(255,255,255,0.06);
+    color:#fff;
+    cursor:pointer;
+    font-weight:700;
+  }
+  .small{font-size:11px;opacity:.9}
+  @media (max-width:420px){
+    .pomodoro{ width:180px; right:12px; top:12px; padding:8px }
+    .time{ font-size:22px }
+  }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <div class="pomodoro" role="region" aria-label="Pomodoro timer">
+      <div class="mode" id="modeLabel">FOCUS</div>
+      <div class="time" id="timeDisplay">25:00</div>
+
+      <div class="controls" aria-hidden="false">
+        <button id="startPauseBtn">Start</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+
+      <div class="adjust small" aria-hidden="false">
+        <div class="pair">
+          <div class="small">Focus</div>
+          <div class="val" id="focusVal">25</div>
+          <div>
+            <button class="adj-btn" data-target="focus" data-op="+" aria-label="Increase focus">+</button>
+            <button class="adj-btn" data-target="focus" data-op="-" aria-label="Decrease focus">−</button>
+          </div>
+        </div>
+        <div class="pair">
+          <div class="small">Break</div>
+          <div class="val" id="breakVal">5</div>
+          <div>
+            <button class="adj-btn" data-target="break" data-op="+" aria-label="Increase break">+</button>
+            <button class="adj-btn" data-target="break" data-op="-" aria-label="Decrease break">−</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* Pomodoro logic with persistence */
+const startPauseBtn = document.getElementById('startPauseBtn');
+const resetBtn = document.getElementById('resetBtn');
+const timeDisplay = document.getElementById('timeDisplay');
+const modeLabel = document.getElementById('modeLabel');
+const focusVal = document.getElementById('focusVal');
+const breakVal = document.getElementById('breakVal');
+
+const STORAGE_KEY = 'pomodoro_settings_v1';
+
+let state = {
+  running: false,
+  mode: 'focus', // 'focus' or 'break'
+  focusMin: 25,
+  breakMin: 5,
+  remainingSec: null,
+  lastTick: null
+};
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw) Object.assign(state, JSON.parse(raw));
+  }catch(e){}
+  state.focusMin = state.focusMin || 25;
+  state.breakMin = state.breakMin || 5;
+  if(state.remainingSec === null) state.remainingSec = state.mode === 'focus' ? state.focusMin*60 : state.breakMin*60;
+}
+function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+function beep(){
+  try{
+    const MASTER_VOLUME = 0.7; // 0.0 - 1.0
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const o1 = ctx.createOscillator();
+    const o2 = ctx.createOscillator();
+    const g = ctx.createGain();
+
+    // primary + octave
+    o1.type = 'sine'; o1.frequency.value = 880;
+    o2.type = 'sine'; o2.frequency.value = 1320; // harmonic
+
+    g.gain.value = 0.00001;
+    o1.connect(g);
+    o2.connect(g);
+    g.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    o1.start(now);
+    o2.start(now);
+
+    // envelope
+    g.gain.exponentialRampToValueAtTime(0.22 * MASTER_VOLUME, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.06 * MASTER_VOLUME, now + 0.18);
+    g.gain.exponentialRampToValueAtTime(0.00001, now + 0.9);
+
+    o1.stop(now + 1.0);
+    o2.stop(now + 1.0);
+  }catch(e){}
+}
+
+
+function two(n){ return String(n).padStart(2,'0'); }
+
+function render(){
+  const m = Math.floor(state.remainingSec / 60);
+  const s = state.remainingSec % 60;
+  timeDisplay.textContent = `${two(m)}:${two(s)}`;
+  modeLabel.textContent = state.mode === 'focus' ? 'FOCUS' : 'BREAK';
+  focusVal.textContent = state.focusMin;
+  breakVal.textContent = state.breakMin;
+  startPauseBtn.textContent = state.running ? 'Pause' : 'Start';
+}
+
+function startTimer(){
+  if(state.running) return;
+  state.running = true;
+  state.lastTick = Date.now();
+  saveState();
+}
+
+function pauseTimer(){
+  if(!state.running) return;
+  state.running = false;
+  state.lastTick = null;
+  saveState();
+}
+
+function resetTimer(){
+  state.running = false;
+  state.mode = 'focus';
+  state.remainingSec = state.focusMin * 60;
+  state.lastTick = null;
+  saveState();
+  render();
+}
+
+function tick(){
+  if(!state.running) return;
+  const now = Date.now();
+  const elapsed = Math.floor((now - state.lastTick)/1000);
+  if(elapsed > 0){
+    state.remainingSec -= elapsed;
+    state.lastTick = now;
+    if(state.remainingSec <= 0){
+      beep();
+      if(state.mode === 'focus'){
+        state.mode = 'break';
+        state.remainingSec = state.breakMin * 60;
+      } else {
+        state.mode = 'focus';
+        state.remainingSec = state.focusMin * 60;
+      }
+    }
+    saveState();
+    render();
+  }
+}
+
+startPauseBtn.addEventListener('click', () => {
+  state.running ? pauseTimer() : startTimer();
+  render();
+});
+
+resetBtn.addEventListener('click', () => {
+  resetTimer();
+});
+
+document.querySelectorAll('.adj-btn').forEach(btn=>{
+  btn.addEventListener('click', (e)=>{
+    const t = e.currentTarget.dataset.target;
+    const op = e.currentTarget.dataset.op;
+    if(t === 'focus'){
+      state.focusMin = Math.max(1, state.focusMin + (op === '+' ? 1 : -1));
+      if(state.mode === 'focus' && !state.running) state.remainingSec = state.focusMin*60;
+    } else {
+      state.breakMin = Math.max(1, state.breakMin + (op === '+' ? 1 : -1));
+      if(state.mode === 'break' && !state.running) state.remainingSec = state.breakMin*60;
+    }
+    saveState();
+    render();
+  });
+});
+
+loadState();
+if(state.remainingSec === null) state.remainingSec = state.mode === 'focus' ? state.focusMin*60 : state.breakMin*60;
+render();
+
+setInterval(()=>{
+  tick();
+  render();
+}, 1000);
+
+window.addEventListener('visibilitychange', ()=>{
+  if(state.running && !document.hidden){
+    state.lastTick = Date.now();
+  }
+});
+</script>
+</body>
+</html>
+
